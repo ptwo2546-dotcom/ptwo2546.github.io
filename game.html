@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Omamori Flight</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            touch-action: manipulation;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background-color: #2c3e50;
+            box-shadow: 0 0 40px rgba(0,0,0,0.8);
+            max-width: 100%;
+            max-height: 100vh;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            color: white;
+            text-shadow: 2px 2px 4px #000;
+        }
+        .btn {
+            pointer-events: auto;
+            background: #d35400;
+            border: 3px solid #f39c12;
+            padding: 12px 24px;
+            color: white;
+            font-weight: bold;
+            font-size: 22px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+            box-shadow: 0 4px 0 #8e44ad;
+        }
+        .btn:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 0 #8e44ad;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-overlay">
+        <div id="start-screen" class="flex flex-col items-center">
+            <h1 class="text-5xl mb-4 font-black tracking-widest text-orange-500 text-center">OMAMORI FLIGHT</h1>
+            <p class="text-xl mb-8 opacity-80">Tap to protect the charm</p>
+            <button class="btn" onclick="startGame()">BEGIN JOURNEY</button>
+        </div>
+
+        <div id="game-ui" class="hidden absolute top-10 flex flex-col items-center">
+            <span id="score-display" class="text-6xl font-bold text-orange-400">0</span>
+        </div>
+
+        <div id="game-over-screen" class="hidden flex flex-col items-center bg-black/60 p-10 rounded-lg backdrop-blur-md border-2 border-orange-500">
+            <h2 class="text-4xl mb-2 font-black text-red-500">JOURNEY INTERRUPTED</h2>
+            <p class="text-2xl mb-1">Blessings: <span id="final-score">0</span></p>
+            <p class="text-xl mb-6 opacity-70">Highest Blessing: <span id="best-score">0</span></p>
+            <button class="btn" onclick="startGame()">TRY AGAIN</button>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('score-display');
+    const finalScore = document.getElementById('final-score');
+    const bestScoreDisplay = document.getElementById('best-score');
+    
+    const startScreen = document.getElementById('start-screen');
+    const gameUI = document.getElementById('game-ui');
+    const gameOverScreen = document.getElementById('game-over-screen');
+
+    // Audio Context for jumping sound
+    let audioCtx;
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    function playJumpSound() {
+        if (!audioCtx) return;
+        
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        oscillator.type = 'triangle'; // Softer, retro sound
+        oscillator.frequency.setValueAtTime(150, audioCtx.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1);
+
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 0.1);
+    }
+
+    // Game Constants
+    const GRAVITY = 0.22;
+    const JUMP_STRENGTH = -5.2;
+    const PIPE_SPEED = 2.8;
+    const PIPE_SPAWN_INTERVAL = 1400; 
+    const PIPE_WIDTH = 70;
+    const PIPE_GAP = 180;
+
+    // State
+    let bird = { x: 70, y: 0, velocity: 0, width: 45, height: 65, rotation: 0 };
+    let pipes = [];
+    let particles = [];
+    let score = 0;
+    let highscore = localStorage.getItem('omamoriHighScore') || 0;
+    let gameActive = false;
+    let lastTime = 0;
+    let pipeTimer = 0;
+
+    // Image Handling
+    const charmImg = new Image();
+    charmImg.src = 'IMG_4422.jpeg'; 
+
+    function initCanvas() {
+        canvas.width = Math.min(window.innerWidth, 450);
+        canvas.height = Math.min(window.innerHeight, 700);
+        bird.y = canvas.height / 2;
+    }
+
+    window.addEventListener('resize', initCanvas);
+    initCanvas();
+
+    function flap() {
+        if (!gameActive) return;
+        initAudio(); // Initialize on first interaction
+        bird.velocity = JUMP_STRENGTH;
+        playJumpSound();
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' || e.code === 'ArrowUp') flap();
+    });
+
+    canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        flap();
+    }, { passive: false });
+
+    canvas.addEventListener('mousedown', flap);
+
+    window.startGame = function() {
+        initAudio(); // Context must be resumed on user gesture
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+
+        bird.y = canvas.height / 2;
+        bird.velocity = 0;
+        bird.rotation = 0;
+        pipes = [];
+        particles = [];
+        score = 0;
+        pipeTimer = 0;
+        gameActive = true;
+        
+        scoreDisplay.innerText = "0";
+        startScreen.classList.add('hidden');
+        gameOverScreen.classList.add('hidden');
+        gameUI.classList.remove('hidden');
+    };
+
+    function gameOver() {
+        gameActive = false;
+        if (score > highscore) {
+            highscore = score;
+            localStorage.setItem('omamoriHighScore', highscore);
+        }
+        finalScore.innerText = score;
+        bestScoreDisplay.innerText = highscore;
+        gameUI.classList.add('hidden');
+        gameOverScreen.classList.remove('hidden');
+    }
+
+    function spawnPipe() {
+        const minHeight = 80;
+        const maxAvailable = canvas.height - PIPE_GAP - (minHeight * 2);
+        const topHeight = minHeight + Math.random() * maxAvailable;
+        
+        pipes.push({
+            x: canvas.width,
+            top: topHeight,
+            passed: false
+        });
+    }
+
+    function createParticle(x, y, color) {
+        for(let i=0; i<8; i++) {
+            particles.push({
+                x, y,
+                vx: (Math.random() - 0.5) * 6,
+                vy: (Math.random() - 0.5) * 6,
+                life: 1.0,
+                color: color || '#f39c12'
+            });
+        }
+    }
+
+    function update(dt) {
+        if (!gameActive) return;
+
+        bird.velocity += GRAVITY;
+        bird.y += bird.velocity;
+        
+        bird.rotation = Math.min(Math.PI / 8, Math.max(-Math.PI / 12, bird.velocity * 0.05));
+
+        if (bird.y + (bird.height/2) > canvas.height || bird.y - (bird.height/2) < 0) {
+            gameOver();
+        }
+
+        pipeTimer += dt;
+        if (pipeTimer > PIPE_SPAWN_INTERVAL) {
+            spawnPipe();
+            pipeTimer = 0;
+        }
+
+        for (let i = pipes.length - 1; i >= 0; i--) {
+            let p = pipes[i];
+            p.x -= PIPE_SPEED;
+
+            const hitBoxW = bird.width * 0.7;
+            const hitBoxH = bird.height * 0.8;
+            
+            if (bird.x + hitBoxW/2 > p.x && bird.x - hitBoxW/2 < p.x + PIPE_WIDTH) {
+                if (bird.y - hitBoxH/2 < p.top || bird.y + hitBoxH/2 > p.top + PIPE_GAP) {
+                    gameOver();
+                }
+            }
+
+            if (!p.passed && p.x + PIPE_WIDTH < bird.x) {
+                p.passed = true;
+                score++;
+                scoreDisplay.innerText = score;
+                createParticle(bird.x, bird.y, '#f1c40f');
+            }
+
+            if (p.x + PIPE_WIDTH < -100) pipes.splice(i, 1);
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= 0.025;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+    }
+
+    function draw() {
+        const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        grad.addColorStop(0, '#2c3e50');
+        grad.addColorStop(1, '#000000');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        pipes.forEach(p => {
+            ctx.fillStyle = '#8e44ad';
+            ctx.strokeStyle = '#2c3e50';
+            ctx.lineWidth = 3;
+            
+            ctx.fillRect(p.x, 0, PIPE_WIDTH, p.top);
+            ctx.strokeRect(p.x, -5, PIPE_WIDTH, p.top + 5);
+            
+            ctx.fillRect(p.x, p.top + PIPE_GAP, PIPE_WIDTH, canvas.height - (p.top + PIPE_GAP));
+            ctx.strokeRect(p.x, p.top + PIPE_GAP, PIPE_WIDTH, canvas.height - (p.top + PIPE_GAP) + 5);
+            
+            ctx.fillStyle = '#f39c12';
+            ctx.fillRect(p.x - 4, p.top - 15, PIPE_WIDTH + 8, 15);
+            ctx.fillRect(p.x - 4, p.top + PIPE_GAP, PIPE_WIDTH + 8, 15);
+        });
+
+        particles.forEach(p => {
+            ctx.globalAlpha = p.life;
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2, 0, Math.PI*2);
+            ctx.fill();
+        });
+        ctx.globalAlpha = 1.0;
+
+        ctx.save();
+        ctx.translate(bird.x, bird.y);
+        ctx.rotate(bird.rotation);
+        
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = "rgba(211, 84, 0, 0.5)";
+        
+        ctx.beginPath();
+        const rw = bird.width;
+        const rh = bird.height;
+        ctx.rect(-rw/2, -rh/2, rw, rh);
+        ctx.clip();
+        
+        if(charmImg.complete) {
+            ctx.drawImage(charmImg, -rw/2, -rh/2, rw, rh);
+        } else {
+            ctx.fillStyle = "#d35400";
+            ctx.fillRect(-rw/2, -rh/2, rw, rh);
+        }
+        
+        ctx.strokeStyle = "#f1c40f";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(-rw/2, -rh/2, rw, rh);
+        
+        ctx.restore();
+    }
+
+    function gameLoop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        const dt = timestamp - lastTime;
+        lastTime = timestamp;
+
+        update(dt);
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
